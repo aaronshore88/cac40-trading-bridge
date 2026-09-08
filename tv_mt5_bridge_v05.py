@@ -40,6 +40,7 @@ from typing import Optional
  
 from fastapi import FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
  
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
@@ -484,3 +485,166 @@ def update_config(update: dict, authorization: Optional[str] = Header(default=No
         conn.commit()
  
     return _load_config()
+ 
+ 
+# --- Same-origin settings page ---------------------------------------------
+# Served from this app itself (not a separate local file), so the settings
+# page and the API it calls share an origin -- no CORS, no file:// fetch
+# quirks, no base-URL field to fill in. Auth (the MT5 token) is entered once
+# and kept in this page's own localStorage.
+ 
+_SETTINGS_PAGE = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Blitzkrieg EA Settings</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Arial, sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; color: #222; background: #fff; }
+  h1 { font-size: 20px; }
+  label { display: block; margin-top: 14px; font-size: 13px; color: #555; }
+  input[type=text], input[type=number], input[type=password] {
+    width: 100%; box-sizing: border-box; padding: 8px; font-size: 14px;
+    border: 1px solid #ccc; border-radius: 6px; margin-top: 4px;
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .row label { margin: 0; }
+  button {
+    margin-top: 20px; padding: 10px 16px; font-size: 14px; border: none;
+    border-radius: 6px; cursor: pointer; margin-right: 8px;
+  }
+  #loadBtn { background: #eee; }
+  #saveBtn { background: #2563eb; color: white; }
+  #status { margin-top: 14px; font-size: 13px; white-space: pre-wrap; }
+  .ok { color: #16a34a; }
+  .err { color: #dc2626; }
+</style>
+</head>
+<body>
+  <h1>Blitzkrieg EA - remote settings</h1>
+  <p style="font-size:13px;color:#666">
+    Reads and writes the settings the EA polls on every cycle.
+    Changes here take effect on the EA's next timer tick.
+  </p>
+ 
+  <label>MT5 token (same value as InpMT5Token / Render's MT5_TOKEN)
+    <input type="password" id="token">
+  </label>
+ 
+  <hr style="margin-top:20px">
+ 
+  <label>Risk % per trade
+    <input type="number" step="0.1" id="risk_percent">
+  </label>
+  <div class="row">
+    <input type="checkbox" id="dry_run">
+    <label for="dry_run">Dry run (log only, no real orders)</label>
+  </div>
+  <label>Magic number
+    <input type="number" step="1" id="magic_number">
+  </label>
+  <label>Broker symbol
+    <input type="text" id="broker_symbol">
+  </label>
+  <label>Deviation (points)
+    <input type="number" step="1" id="deviation_points">
+  </label>
+  <label>Poll interval (seconds)
+    <input type="number" step="1" id="poll_interval_seconds">
+  </label>
+  <label>Management interval (seconds)
+    <input type="number" step="1" id="management_interval_seconds">
+  </label>
+  <label>Rates lookback (bars)
+    <input type="number" step="1" id="rates_lookback_bars">
+  </label>
+ 
+  <div>
+    <button id="loadBtn">Load current</button>
+    <button id="saveBtn">Save changes</button>
+  </div>
+  <div id="status"></div>
+ 
+<script>
+const FIELDS = ["risk_percent","dry_run","magic_number","broker_symbol",
+                "deviation_points","poll_interval_seconds","management_interval_seconds",
+                "rates_lookback_bars"];
+ 
+function setStatus(msg, ok) {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = ok ? "ok" : "err";
+}
+ 
+window.addEventListener("load", () => {
+  try {
+    const savedToken = localStorage.getItem("blitz_token");
+    if (savedToken) document.getElementById("token").value = savedToken;
+  } catch (e) {}
+});
+ 
+function saveToken() {
+  try { localStorage.setItem("blitz_token", document.getElementById("token").value); } catch (e) {}
+}
+ 
+async function loadConfig() {
+  saveToken();
+  const token = document.getElementById("token").value;
+  setStatus("Loading...", true);
+  try {
+    const resp = await fetch("/mt5/config", { headers: { "Authorization": "Bearer " + token } });
+    if (!resp.ok) { setStatus("Load failed: HTTP " + resp.status, false); return; }
+    const cfg = await resp.json();
+    for (const key of FIELDS) {
+      const el = document.getElementById(key);
+      if (!el) continue;
+      if (el.type === "checkbox") el.checked = !!cfg[key];
+      else el.value = cfg[key];
+    }
+    setStatus("Loaded current settings.", true);
+  } catch (e) {
+    setStatus("Load failed: " + e, false);
+  }
+}
+ 
+async function saveConfig() {
+  saveToken();
+  const token = document.getElementById("token").value;
+  const body = {};
+  for (const key of FIELDS) {
+    const el = document.getElementById(key);
+    if (!el) continue;
+    if (el.type === "checkbox") body[key] = el.checked;
+    else if (el.type === "number") body[key] = parseFloat(el.value);
+    else body[key] = el.value;
+  }
+  setStatus("Saving...", true);
+  try {
+    const resp = await fetch("/mt5/config", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      setStatus("Save failed: HTTP " + resp.status + " " + text, false);
+      return;
+    }
+    const cfg = await resp.json();
+    setStatus("Saved. EA will pick this up on its next poll.\\n" + JSON.stringify(cfg, null, 2), true);
+  } catch (e) {
+    setStatus("Save failed: " + e, false);
+  }
+}
+ 
+document.getElementById("loadBtn").addEventListener("click", loadConfig);
+document.getElementById("saveBtn").addEventListener("click", saveConfig);
+</script>
+</body>
+</html>
+"""
+ 
+ 
+@app.get("/ui", response_class=HTMLResponse)
+def settings_ui():
+    return _SETTINGS_PAGE
+ 
