@@ -94,7 +94,7 @@ class TVSignal(BaseModel):
     signal_type: str = Field(min_length=1, max_length=32)
     signal_price: float
     sl: float
- 
+ risk_percent_override: float = 0.0
     # Legacy fields from the earlier per-action-alert protocol (see
     # ALLOWED_SIDES note above). Optional/defaulted so this model doesn't
     # break if something still sends them; Blitzkrieg V3.4 never does.
