@@ -143,7 +143,20 @@ class TVSignal(BaseModel):
     c_specific_tp_enabled: bool
     c_buy_tp_r: float
     c_sell_tp_r: float
- 
+
+    # --- Also part of f_exitManagementPayload() (DEMA displacement handoff,
+    # price exhaustion exit) -- present in V3.4 already, never declared here.
+    # This alone was enough to 422 every real alert, independent of the
+    # V4.0 sizing fields above.
+    dema_displacement_handoff_enabled: bool
+    dema_displacement_threshold: float
+    exhaustion_exit_enabled: bool
+    exhaustion_min_profit_r: float
+    exhaustion_wick_percent: float
+    exhaustion_action: str
+    exhaustion_partial_close_pct: float
+    exhaustion_be_offset: float
+
     signal_time_ms: int
  
  
@@ -182,14 +195,22 @@ V06_COLUMNS: list[tuple[str, str]] = [
     ("c_specific_tp_enabled", "INTEGER NOT NULL DEFAULT 0"),
     ("c_buy_tp_r", "REAL NOT NULL DEFAULT 0"),
     ("c_sell_tp_r", "REAL NOT NULL DEFAULT 0"),
+    ("dema_displacement_handoff_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("dema_displacement_threshold", "REAL NOT NULL DEFAULT 0"),
+    ("exhaustion_exit_enabled", "INTEGER NOT NULL DEFAULT 0"),
+    ("exhaustion_min_profit_r", "REAL NOT NULL DEFAULT 0"),
+    ("exhaustion_wick_percent", "REAL NOT NULL DEFAULT 0"),
+    ("exhaustion_action", "TEXT NOT NULL DEFAULT ''"),
+    ("exhaustion_partial_close_pct", "REAL NOT NULL DEFAULT 0"),
+    ("exhaustion_be_offset", "REAL NOT NULL DEFAULT 0"),
     ("mt5_ticket", "INTEGER"),
     ("ack_detail", "TEXT"),
 ]
- 
+
 _BOOL_FIELDS = {
     "dema_trail_enabled", "fixed_tp_enabled", "be_enabled", "profit_lock_enabled",
     "exit_renko_enabled", "exit_renko_trail_after_trigger", "c_management_enabled",
-    "c_specific_tp_enabled",
+    "c_specific_tp_enabled", "dema_displacement_handoff_enabled", "exhaustion_exit_enabled",
 }
  
 # --- /mt5/config defaults -----------------------------------------------
