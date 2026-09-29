@@ -76,6 +76,9 @@ ALLOWED_SIDES = {
     "CLOSE_BUY", "CLOSE_SELL",
     "MANAGE_BUY", "MANAGE_SELL",
     "TRAIL_BUY", "TRAIL_SELL",
+    # Blitzkrieg V4.1 (RENKO): tells the EA to close whatever RENKO position
+    # is open on `symbol`/`closed_side`. No exit-management bundle involved.
+    "EXIT",
 }
  
 EXIT_RENKO_METHODS = {"Traditional", "ATR"}
@@ -105,57 +108,82 @@ class TVSignal(BaseModel):
     compounding_mode: str = "Off"
     compounding_multiplier: float = 1.0
 
+    # --- Blitzkrieg V4.1 (RENKO) fields. Optional/defaulted so V3.4/V4.0
+    # payloads (which never send them) are completely unaffected. ---
+    brick_size: float = 0.0
+    required_entry_bricks: int = 0
+    required_exit_bricks: int = 0
+    closed_side: str = ""
+
+    # --- Blitzkrieg V4.1 Scale-In mode. scale_in_layer is the 1-based layer
+    # number this entry represents within its stack (1 = the fresh/first
+    # entry, 2+ = an added same-direction layer while already in a
+    # position). Sent with every RENKO entry alert regardless of whether
+    # Scale-In is actually enabled in the Pine script (it's always 1 when
+    # off), so this must stay defaulted -- an older EA/backend pairing that
+    # predates Scale-In never sends it at all. ---
+    scale_in_layer: int = 1
+
+    # closes_signal_id: only sent on an EXIT alert. Every scaled-in layer is
+    # its own separate trade end to end -- one EXIT alert per closing layer,
+    # each naming the exact entry signal_id it closes, rather than one EXIT
+    # alert that batch-closes a whole stack. Defaulted/optional so it never
+    # breaks a non-RENKO or pre-Scale-In EXIT payload.
+    closes_signal_id: str = ""
+
     # Legacy fields from the earlier per-action-alert protocol (see
     # ALLOWED_SIDES note above). Optional/defaulted so this model doesn't
     # break if something still sends them; Blitzkrieg V3.4 never does.
     value: float = 0.0
     value2: float = 0.0
- 
-    # --- Exit-management config, sent with every V3.4 entry alert ---
-    management_version: int
-    chart_timeframe: str
-    dema_trail_enabled: bool
-    dema_length: int
-    dema_trail_buffer: float
-    fixed_tp_enabled: bool
-    fixed_tp_r: float
-    be_enabled: bool
-    be_trigger_r: float
-    be_offset: float
-    profit_lock_enabled: bool
-    profit_lock_start_r: float
-    profit_lock_first_sl_r: float
-    profit_lock_trigger_every_r: float
-    profit_lock_move_sl_by_r: float
-    profit_lock_max_moves: int
-    exit_renko_enabled: bool
-    exit_renko_method: str
-    exit_renko_brick_size: float
-    exit_renko_atr_length: int
-    exit_renko_opposing_bricks: int
-    exit_renko_action: str
-    exit_renko_partial_close_pct: float
-    exit_renko_be_offset: float
-    exit_renko_sl_buffer: float
-    exit_renko_trail_after_trigger: bool
-    c_management_enabled: bool
-    c_exit_opposing_candles: int
-    c_specific_tp_enabled: bool
-    c_buy_tp_r: float
-    c_sell_tp_r: float
+
+    # --- Exit-management config, sent with every V3.4/V4.0 entry alert.
+    # Defaulted (not required) as of V4.1: a signal_type="RENKO" payload has
+    # no equivalent concept and never sends this bundle at all. V3.4/V4.0
+    # always sends every one of these with a real value, so nothing changes
+    # for them. ---
+    management_version: int = 1
+    chart_timeframe: str = ""
+    dema_trail_enabled: bool = False
+    dema_length: int = 0
+    dema_trail_buffer: float = 0.0
+    fixed_tp_enabled: bool = False
+    fixed_tp_r: float = 0.0
+    be_enabled: bool = False
+    be_trigger_r: float = 0.0
+    be_offset: float = 0.0
+    profit_lock_enabled: bool = False
+    profit_lock_start_r: float = 0.0
+    profit_lock_first_sl_r: float = 0.0
+    profit_lock_trigger_every_r: float = 0.0
+    profit_lock_move_sl_by_r: float = 0.0
+    profit_lock_max_moves: int = 0
+    exit_renko_enabled: bool = False
+    exit_renko_method: str = ""
+    exit_renko_brick_size: float = 0.0
+    exit_renko_atr_length: int = 0
+    exit_renko_opposing_bricks: int = 0
+    exit_renko_action: str = ""
+    exit_renko_partial_close_pct: float = 0.0
+    exit_renko_be_offset: float = 0.0
+    exit_renko_sl_buffer: float = 0.0
+    exit_renko_trail_after_trigger: bool = False
+    c_management_enabled: bool = False
+    c_exit_opposing_candles: int = 0
+    c_specific_tp_enabled: bool = False
+    c_buy_tp_r: float = 0.0
+    c_sell_tp_r: float = 0.0
 
     # --- Also part of f_exitManagementPayload() (DEMA displacement handoff,
-    # price exhaustion exit) -- present in V3.4 already, never declared here.
-    # This alone was enough to 422 every real alert, independent of the
-    # V4.0 sizing fields above.
-    dema_displacement_handoff_enabled: bool
-    dema_displacement_threshold: float
-    exhaustion_exit_enabled: bool
-    exhaustion_min_profit_r: float
-    exhaustion_wick_percent: float
-    exhaustion_action: str
-    exhaustion_partial_close_pct: float
-    exhaustion_be_offset: float
+    # price exhaustion exit) -- present in V3.4 already. ---
+    dema_displacement_handoff_enabled: bool = False
+    dema_displacement_threshold: float = 0.0
+    exhaustion_exit_enabled: bool = False
+    exhaustion_min_profit_r: float = 0.0
+    exhaustion_wick_percent: float = 0.0
+    exhaustion_action: str = ""
+    exhaustion_partial_close_pct: float = 0.0
+    exhaustion_be_offset: float = 0.0
 
     signal_time_ms: int
  
@@ -205,6 +233,31 @@ V06_COLUMNS: list[tuple[str, str]] = [
     ("exhaustion_be_offset", "REAL NOT NULL DEFAULT 0"),
     ("mt5_ticket", "INTEGER"),
     ("ack_detail", "TEXT"),
+]
+
+# v0.8: the V4.0 sizing/compounding fields were validated on TVSignal from
+# the start but never actually persisted or forwarded to the EA -- fixing
+# that now, alongside the new Blitzkrieg V4.1 (RENKO) fields.
+V08_COLUMNS: list[tuple[str, str]] = [
+    ("sizing_mode", "TEXT NOT NULL DEFAULT 'risk_percent'"),
+    ("fixed_lot_size", "REAL NOT NULL DEFAULT 0"),
+    ("fixed_money_amount", "REAL NOT NULL DEFAULT 0"),
+    ("compounding_mode", "TEXT NOT NULL DEFAULT 'Off'"),
+    ("compounding_multiplier", "REAL NOT NULL DEFAULT 1"),
+    ("brick_size", "REAL NOT NULL DEFAULT 0"),
+    ("required_entry_bricks", "INTEGER NOT NULL DEFAULT 0"),
+    ("required_exit_bricks", "INTEGER NOT NULL DEFAULT 0"),
+    ("closed_side", "TEXT NOT NULL DEFAULT ''"),
+]
+
+# v0.9: Blitzkrieg V4.1 Scale-In mode -- scale_in_layer is the 1-based layer
+# number each RENKO entry represents within its stack (1 = fresh entry,
+# 2+ = an added layer); closes_signal_id is the exact entry id one EXIT
+# alert closes (every layer is closed by its own separate EXIT alert, never
+# a single alert that batch-closes a whole stack).
+V09_COLUMNS: list[tuple[str, str]] = [
+    ("scale_in_layer", "INTEGER NOT NULL DEFAULT 1"),
+    ("closes_signal_id", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 _BOOL_FIELDS = {
@@ -270,7 +323,15 @@ def init_db():
         for col_name, col_def in V06_COLUMNS:
             if col_name not in cols:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
- 
+
+        for col_name, col_def in V08_COLUMNS:
+            if col_name not in cols:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
+
+        for col_name, col_def in V09_COLUMNS:
+            if col_name not in cols:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
+
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -294,7 +355,7 @@ def require_mt5_token(auth: Optional[str]):
  
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "0.7.0"}
+    return {"ok": True, "version": "0.9.0"}
  
  
 @app.post("/tv/{token}")
@@ -314,14 +375,18 @@ def tradingview_webhook(token: str, signal: TVSignal):
     if not re.fullmatch(r"[A-Za-z0-9_.#-]+", signal.symbol):
         raise HTTPException(status_code=400, detail="invalid symbol characters")
  
-    if signal.signal_price <= 0 or signal.sl <= 0:
-        raise HTTPException(status_code=400, detail="prices must be positive")
- 
-    # Entry risk anchor sanity.
-    if side == "BUY" and signal.sl >= signal.signal_price:
-        raise HTTPException(status_code=400, detail="BUY DEMA risk anchor must be below signal price")
-    if side == "SELL" and signal.sl <= signal.signal_price:
-        raise HTTPException(status_code=400, detail="SELL DEMA risk anchor must be above signal price")
+    # EXIT (Blitzkrieg V4.1) is a close-out instruction, not an entry -- it
+    # carries signal_price for logging only and sl=0 deliberately, so it
+    # skips the entry price/risk-anchor sanity checks below entirely.
+    if side != "EXIT":
+        if signal.signal_price <= 0 or signal.sl <= 0:
+            raise HTTPException(status_code=400, detail="prices must be positive")
+
+        # Entry risk anchor sanity.
+        if side == "BUY" and signal.sl >= signal.signal_price:
+            raise HTTPException(status_code=400, detail="BUY DEMA risk anchor must be below signal price")
+        if side == "SELL" and signal.sl <= signal.signal_price:
+            raise HTTPException(status_code=400, detail="SELL DEMA risk anchor must be above signal price")
  
     # Management-value sanity (legacy value/value2 protocol).
     if signal.signal_type in {"PARTIAL_BE", "PARTIAL_ONLY"}:
@@ -346,8 +411,10 @@ def tradingview_webhook(token: str, signal: TVSignal):
     column_names = [
         "id", "symbol", "side", "signal_type", "signal_price", "sl", "value", "value2",
         "signal_time_ms", "received_at",
-    ] + [name for name, _ in V06_COLUMNS if name not in ("mt5_ticket", "ack_detail")]
- 
+    ] + [name for name, _ in V06_COLUMNS if name not in ("mt5_ticket", "ack_detail")] \
+      + [name for name, _ in V08_COLUMNS] \
+      + [name for name, _ in V09_COLUMNS]
+
     values = [
         signal.id, signal.symbol, side, signal.signal_type, signal.signal_price, signal.sl,
         signal.value, signal.value2, signal.signal_time_ms, now,
@@ -357,6 +424,10 @@ def tradingview_webhook(token: str, signal: TVSignal):
             continue
         v = getattr(signal, name)
         values.append(int(v) if name in _BOOL_FIELDS else v)
+    for name, _ in V08_COLUMNS:
+        values.append(getattr(signal, name))
+    for name, _ in V09_COLUMNS:
+        values.append(getattr(signal, name))
  
     placeholders = ",".join("?" for _ in column_names)
  
@@ -389,6 +460,10 @@ def _row_to_json(row: sqlite3.Row) -> dict:
             continue
         val = row[name]
         out[name] = bool(val) if name in _BOOL_FIELDS else val
+    for name, _ in V08_COLUMNS:
+        out[name] = row[name]
+    for name, _ in V09_COLUMNS:
+        out[name] = row[name]
     return out
  
  
@@ -507,6 +582,13 @@ def update_config(update: dict, authorization: Optional[str] = Header(default=No
                 typed = caster(value)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail=f"invalid value for {key}: {value!r}")
+            # Strip stray leading/trailing whitespace on string settings (e.g.
+            # broker_symbol) -- easy to introduce via mobile autocomplete when
+            # editing the /ui settings page, and MT5's SymbolSelect() needs an
+            # exact match, so an invisible trailing space silently breaks
+            # every order with "Could not select symbol X ".
+            if caster is str:
+                typed = typed.strip()
             stored = "1" if (caster is bool and typed) else ("0" if caster is bool else str(typed))
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "
@@ -678,4 +760,3 @@ document.getElementById("saveBtn").addEventListener("click", saveConfig);
 @app.get("/ui", response_class=HTMLResponse)
 def settings_ui():
     return _SETTINGS_PAGE
- 
