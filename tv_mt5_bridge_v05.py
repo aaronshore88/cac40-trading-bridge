@@ -38,9 +38,10 @@ import time
 from contextlib import closing
 from typing import Optional
  
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
  
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
@@ -54,7 +55,19 @@ if INGEST_TOKEN == MT5_TOKEN:
     raise RuntimeError("Use different tokens for TradingView ingest and MT5 access.")
  
 app = FastAPI(title="Trading Automation Bridge", version="0.7.0")
- 
+
+
+# Temporary diagnostic: log the exact field(s) that failed validation plus
+# the raw body that triggered it, so a 422 on /tv/{token} is debuggable from
+# Render logs alone instead of guessing blind -- TradingView never shows us
+# the response body it gets back. Safe to leave in permanently: it only logs
+# on the failure path and still returns the normal 422 response.
+@app.exception_handler(RequestValidationError)
+async def log_validation_errors(request: Request, exc: RequestValidationError):
+    print(f"422 on {request.url.path}: errors={exc.errors()} body={exc.body}", flush=True)
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+
 # /mt5/config is protected by MT5_TOKEN, not by origin, so it's fine to let
 # any origin call it -- this is what lets a plain local settings.html page
 # (opened as a file, no server of its own) reach this API from a browser.
@@ -355,7 +368,7 @@ def require_mt5_token(auth: Optional[str]):
  
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "0.9.0"}
+    return {"ok": True, "version": "0.9.1"}
  
  
 @app.post("/tv/{token}")
