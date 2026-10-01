@@ -47,6 +47,9 @@ from pydantic import BaseModel, ConfigDict, Field
 INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
 MT5_TOKEN = os.environ.get("MT5_TOKEN", "")
 MAX_SIGNAL_AGE_SECONDS = int(os.environ.get("MAX_SIGNAL_AGE_SECONDS", "120"))
+# How long a dispatched-but-never-acked signal sits before it's eligible to
+# be handed out again. See the claim logic in /mt5/next for why this exists.
+DISPATCH_RETRY_SECONDS = int(os.environ.get("DISPATCH_RETRY_SECONDS", "15"))
 DB_PATH = os.environ.get("DB_PATH", "./signals.db")
  
 if not INGEST_TOKEN or not MT5_TOKEN:
@@ -273,6 +276,23 @@ V09_COLUMNS: list[tuple[str, str]] = [
     ("closes_signal_id", "TEXT NOT NULL DEFAULT ''"),
 ]
 
+# v0.9 -> v0.9.2: /mt5/next used to SELECT a 'pending' row and leave it
+# 'pending' until the EA's ack came back. Every poll before that ack (the EA
+# polls roughly once a second) re-delivered the exact same signal, so it got
+# processed multiple times in parallel with inconsistent results -- this is
+# why the same signal id could show SymbolSelect succeeding in the EA's own
+# terminal log while the backend separately recorded a "Could not select
+# symbol" reject for it, and why some exits were rejected for a 0.0 lot size
+# -- two (or more) concurrent attempts at the same order, stepping on each
+# other. dispatched_at records when a signal was actually handed out, so
+# /mt5/next can atomically flip it to 'dispatched' the moment it's claimed
+# and never hand out the same one again until it's genuinely done, expired,
+# or has sat dispatched-but-unacked longer than DISPATCH_RETRY_SECONDS
+# (meaning the EA likely crashed or dropped the request mid-flight).
+V10_COLUMNS: list[tuple[str, str]] = [
+    ("dispatched_at", "INTEGER"),
+]
+
 _BOOL_FIELDS = {
     "dema_trail_enabled", "fixed_tp_enabled", "be_enabled", "profit_lock_enabled",
     "exit_renko_enabled", "exit_renko_trail_after_trigger", "c_management_enabled",
@@ -342,6 +362,10 @@ def init_db():
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
 
         for col_name, col_def in V09_COLUMNS:
+            if col_name not in cols:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
+
+        for col_name, col_def in V10_COLUMNS:
             if col_name not in cols:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN {col_name} {col_def}")
 
@@ -483,34 +507,59 @@ def _row_to_json(row: sqlite3.Row) -> dict:
 @app.get("/mt5/next")
 def mt5_next(authorization: Optional[str] = Header(default=None)):
     require_mt5_token(authorization)
- 
+
     now = int(time.time())
     cutoff = now - MAX_SIGNAL_AGE_SECONDS
- 
+    dispatch_cutoff = now - DISPATCH_RETRY_SECONDS
+
     with closing(db()) as conn:
+        # Expire anything too old to act on, whether it was ever dispatched
+        # or not.
         conn.execute(
             """
             UPDATE signals
             SET status='expired', ack_status='expired', ack_at=?
-            WHERE status='pending' AND received_at < ?
+            WHERE status IN ('pending', 'dispatched') AND received_at < ?
             """,
             (now, cutoff),
         )
         conn.commit()
- 
+
+        # Eligible: never dispatched, or dispatched a while ago and still
+        # not acked (EA likely crashed or dropped the request).
         row = conn.execute(
             """
             SELECT *
             FROM signals
-            WHERE status='pending'
+            WHERE status='pending' OR (status='dispatched' AND dispatched_at < ?)
             ORDER BY received_at ASC
             LIMIT 1
-            """
+            """,
+            (dispatch_cutoff,),
         ).fetchone()
- 
-    if row is None:
-        return Response(status_code=204)
- 
+
+        if row is None:
+            return Response(status_code=204)
+
+        # Atomic claim: flips this exact row to 'dispatched' right here, so
+        # a second poll landing before this one's ack can't be handed the
+        # same signal again. If another concurrent request already claimed
+        # it between our SELECT and this UPDATE, rowcount is 0 and we tell
+        # this poll to come back empty-handed rather than send a signal we
+        # no longer own.
+        claim = conn.execute(
+            """
+            UPDATE signals
+            SET status='dispatched', dispatched_at=?
+            WHERE id=? AND (status='pending' OR (status='dispatched' AND dispatched_at < ?))
+            """,
+            (now, row["id"], dispatch_cutoff),
+        )
+        conn.commit()
+
+        if claim.rowcount == 0:
+            return Response(status_code=204)
+
     return _row_to_json(row)
  
  
@@ -534,7 +583,7 @@ def mt5_ack(
             """
             UPDATE signals
             SET status='done', ack_status=?, ack_at=?, mt5_ticket=?, ack_detail=?
-            WHERE id=? AND status='pending'
+            WHERE id=? AND status IN ('pending', 'dispatched')
             """,
             (status, now, mt5_ticket, detail, id),
         )
